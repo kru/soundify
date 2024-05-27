@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"regexp"
+	"sync"
+	"time"
 
 	"github.com/kru/soundify/core/database"
 	"github.com/kru/soundify/core/helper"
@@ -59,37 +62,76 @@ func handleLink(w http.ResponseWriter, r *http.Request) {
 	// You may need to decode URL-encoded characters
 	videoDownloadURL = helper.Unescape(videoDownloadURL)
 
-	fileID, err := database.CreateFile(user.Id, reqBody.Link, videoDownloadURL)
+	re2 := regexp.MustCompile(`\"title\":\"([^\"]{0,255})`)
+	matches2 := re2.FindStringSubmatch(string(htmlData))
+
+	var videoTitle = ""
+	if len(matches2) < 2 {
+		fmt.Println("Could not find video title, fallback to default naming")
+		videoTitle = videoDownloadURL[10:12]
+	}
+	videoTitle = matches2[1]
+	fmt.Println("Video title: ", videoTitle)
+
+	fileID, err := database.CreateFile(user.Id, reqBody.Link, videoDownloadURL, videoTitle)
 	if err != nil {
 		http.Error(w, "Unable to process given url", http.StatusInternalServerError)
 		return
 	}
 	log.Println("fileID: ", fileID)
 
-	// Step 3: Download the video
-	// put inside worker
-	// outFile, err := os.Create("kris-test.mp4")
-	// if err != nil {
-	// 	fmt.Println("Error creating file:", err)
-	// 	return
-	// }
-	// defer outFile.Close()
-	//
-	// videoResp, err := http.Get(videoDownloadURL)
-	// if err != nil {
-	// 	fmt.Println("Error downloading video:", err)
-	// 	return
-	// }
-	// defer videoResp.Body.Close()
-	//
-	// _, err = io.Copy(outFile, videoResp.Body)
-	// if err != nil {
-	// 	fmt.Println("Error saving video:", err)
-	// 	return
-	// }
-
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"response": "We're processing your request, you can download it via email later"}`))
+}
+
+func worker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	fmt.Println("init worker")
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			fmt.Println("worker started")
+			files, err := database.GetFiles()
+			if err != nil {
+				log.Fatalf("error while querying files table %v", err)
+			}
+
+			for i := 0; i < len(files); i++ {
+				fmt.Println("processing file")
+			}
+			// update status to processing or processed
+
+		// Step 3: Download the video
+		// fetch links with status new
+		// Download each link
+		// put inside worker
+		// outFile, err := os.Create("kris-test.mp4")
+		// if err != nil {
+		// 	fmt.Println("Error creating file:", err)
+		// 	return
+		// }
+		// defer outFile.Close()
+		//
+		// videoResp, err := http.Get(videoDownloadURL)
+		// if err != nil {
+		// 	fmt.Println("Error downloading video:", err)
+		// 	return
+		// }
+		// defer videoResp.Body.Close()
+		//
+		// _, err = io.Copy(outFile, videoResp.Body)
+		// if err != nil {
+		// 	fmt.Println("Error saving video:", err)
+		// 	return
+		// }
+		case <-ctx.Done():
+			fmt.Println("Worker cancelled before completion")
+			return
+		}
+	}
 }
 
 func main() {
@@ -108,6 +150,16 @@ func main() {
 		return
 	}
 
+	var wg sync.WaitGroup
+
+	// Context to manage worker lifecycle with a 15-second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	// Run the worker in a separate goroutine
+	wg.Add(1)
+	go worker(ctx, &wg)
+
 	router := http.NewServeMux()
 
 	router.HandleFunc("POST /links", handleLink)
@@ -122,6 +174,18 @@ func main() {
 		Handler: middlewares(router),
 	}
 
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server ListenAndServe: %v\n", err)
+		}
+	}()
+
 	fmt.Println("Server listening to port 8080")
-	log.Fatal(server.ListenAndServe())
+
+	// Wait for the worker to finish
+	wg.Wait()
+	fmt.Println("Worker has completed")
+
+	// Keep the main function running for the HTTP server
+	select {}
 }
