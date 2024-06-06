@@ -73,6 +73,24 @@ func GetFiles() ([]File, error) {
 	return files, nil
 }
 
-func UpdateFiles(fileIDs []int) {
+func UpdateFile(status FileStatus, updatedAt string, fileID int) error {
+	result, err := DB.Exec(
+		"UPDATE files SET status = $1, updated_at = $2 WHERE id = $3",
+		status, updatedAt, fileID,
+	)
 
+	if err != nil {
+		return fmt.Errorf("Error while updating file ID: %d error %v", fileID, err)
+	}
+
+	rowAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("Error file ID: %d not affecting any row %v", fileID, err)
+	}
+
+	if rowAffected == 0 {
+		return fmt.Errorf("no record found with ID %d", fileID)
+	}
+
+	return nil
 }
